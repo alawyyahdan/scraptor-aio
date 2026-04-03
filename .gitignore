@@ -1,0 +1,61 @@
+# --- Dependencies ---
+node_modules/
+
+# --- Secrets & local env (never commit) ---
+.env
+.env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.example
+backend/.env
+frontend/.env
+
+# --- Build & tool cache ---
+dist/
+dist-ssr/
+build/
+.vite/
+.cache/
+*.tsbuildinfo
+coverage/
+.nyc_output/
+
+# --- Backend runtime data (keys, feedback, traffic, activity) ---
+backend/data/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+*.egg-info/
+.eggs/
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- IDE ---
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+
+# --- Misc local ---
+*.local
+
+# --- VPS / PM2 (dibuat skrip setup, jangan commit) ---
+deploy.env
