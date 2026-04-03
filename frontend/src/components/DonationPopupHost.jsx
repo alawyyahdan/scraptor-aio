@@ -32,6 +32,16 @@ export default function DonationPopupHost({
     }
   }, []);
 
+  /** Setiap load/refresh halaman penuh: ulang hitungan klik (5 klik → popup lagi). */
+  useEffect(() => {
+    try {
+      sessionStorage.removeItem(SSN_CLICKS);
+      sessionStorage.removeItem(SSN_SHOWN);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   useEffect(() => {
     openRef.current = open;
   }, [open]);

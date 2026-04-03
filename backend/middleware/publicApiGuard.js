@@ -21,6 +21,22 @@ function frontendOriginSet() {
   return new Set(parseList(process.env.FRONTEND_ORIGINS));
 }
 
+function originFromReferer(referer) {
+  if (!referer || typeof referer !== 'string') return null;
+  try {
+    return new URL(referer.trim()).origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Header Origin; bila kosong (mis. proxy tidak meneruskan), pakai origin dari Referer. */
+function getEffectiveOrigin(req) {
+  const direct = req.get('origin');
+  if (direct) return direct;
+  return originFromReferer(req.get('referer'));
+}
+
 /**
  * Production dengan whitelist: hanya origin frontend (bukan reflect semua).
  * Dev / tanpa FRONTEND_ORIGINS: tetap reflect (nyaman lokal).
@@ -89,7 +105,7 @@ function issuePublicAccessToken(req, res) {
     });
   }
 
-  const origin = req.get('origin');
+  const origin = getEffectiveOrigin(req);
   if (!origin || !allowed.has(origin)) {
     return res.status(403).json({
       error: 'Origin tidak diizinkan meminta token. Sesuaikan FRONTEND_ORIGINS.',
@@ -138,16 +154,21 @@ function apiAccessGuard(req, res, next) {
       return res.status(403).json({ error: 'Token akses tidak valid.' });
     }
 
-    const origin = req.get('origin');
-    if (strictFrontendLock() && !origin) {
+    const effectiveOrigin = getEffectiveOrigin(req);
+    if (strictFrontendLock() && !effectiveOrigin) {
       return res.status(403).json({
-        error: 'Permintaan ditolak: header Origin wajib untuk API ini.',
+        error:
+          'Permintaan ditolak: butuh Origin atau Referer dari frontend. Cek nginx: proxy_set_header Origin $http_origin; proxy_set_header Referer $http_referer;',
       });
     }
-    if (strictFrontendLock() && origin && !frontendOriginSet().has(origin)) {
+    if (
+      strictFrontendLock() &&
+      effectiveOrigin &&
+      !frontendOriginSet().has(effectiveOrigin)
+    ) {
       return res.status(403).json({ error: 'Origin tidak diizinkan.' });
     }
-    if (origin && origin !== payload.origin) {
+    if (effectiveOrigin && effectiveOrigin !== payload.origin) {
       return res.status(403).json({ error: 'Token tidak cocok dengan asal permintaan.' });
     }
 
