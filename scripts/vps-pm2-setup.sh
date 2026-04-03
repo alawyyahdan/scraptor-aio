@@ -54,10 +54,10 @@ merge_cors_frontend() {
 echo "=== Scraptor — setup PM2 (backend + frontend terpisah) ==="
 echo ""
 
-read -rp "Port backend [5001]: " BP
-BP=${BP:-5001}
-read -rp "Port frontend — Vite preview [4173]: " FP
-FP=${FP:-4173}
+read -rp "Port backend [3008]: " BP
+BP=${BP:-3008}
+read -rp "Port frontend — Vite preview [3009]: " FP
+FP=${FP:-3009}
 
 read -rp "Host publik untuk URL (IP atau domain, tanpa http/https): " PH
 PH=${PH:-127.0.0.1}
@@ -84,6 +84,19 @@ fi
 upsert_env_line "$ENV_BACKEND" PORT "${BP}"
 merge_cors_frontend "$ENV_BACKEND" "${PH}" "${FP}"
 
+DEF_FE_ORIG="http://${PH}:${FP}"
+read -rp "FRONTEND_ORIGINS — untuk token API (pisah koma) [${DEF_FE_ORIG}]: " FEORIG
+FEORIG=${FEORIG:-"$DEF_FE_ORIG"}
+FEORIG="${FEORIG%/}"
+upsert_env_line "$ENV_BACKEND" FRONTEND_ORIGINS "$FEORIG"
+
+if [[ -f "$ENV_BACKEND" ]] && ! grep -q '^PUBLIC_ACCESS_SECRET=' "$ENV_BACKEND"; then
+  if command -v openssl &>/dev/null; then
+    PSEC="$(openssl rand -hex 32)"
+    upsert_env_line "$ENV_BACKEND" PUBLIC_ACCESS_SECRET "$PSEC"
+  fi
+fi
+
 FE_PROD_LOCAL="$ROOT/frontend/.env.production.local"
 cat >"$FE_PROD_LOCAL" <<EOF
 # Build-time: base URL API untuk browser (Vite)
@@ -91,7 +104,7 @@ VITE_API_BASE_URL=${APIBASE}
 EOF
 
 echo ""
-echo "Menulis: deploy.env, backend/.env (PORT + CORS_ORIGINS), frontend/.env.production.local"
+echo "Menulis: deploy.env, backend/.env (PORT, CORS_ORIGINS, FRONTEND_ORIGINS), frontend/.env.production.local"
 echo ""
 
 if ! command -v npm &>/dev/null; then

@@ -14,17 +14,15 @@ const activityLog = require('./lib/activityLog');
 const publicTraffic = require('./lib/publicTraffic');
 const {
     buildCorsOptions,
+    issuePublicAccessToken,
     apiAccessGuard,
-    parseAllowedOrigins,
 } = require('./middleware/publicApiGuard');
 
-// Middleware — CORS whitelist
 app.use(cors(buildCorsOptions()));
 app.use(express.json());
 
 if (process.env.NODE_ENV === 'production') {
-    const o = parseAllowedOrigins();
-    console.log('[cors] allowed origins:', o.join(', ') || '(none)');
+    console.log('[cors] permissive (reflect request Origin)');
 }
 
 // Auth Route
@@ -97,6 +95,9 @@ app.get('/api/public/config', (_req, res) => {
     res.json(getPublicConfig());
 });
 
+/** Token JWT singkat; hanya jika Origin ∈ FRONTEND_ORIGINS. Tidak memakai secret di bundle. */
+app.post('/api/public/access-token', issuePublicAccessToken);
+
 /** Satu log kunjungan per sesi browser (dipanggil dari frontend setelah T&C). */
 app.post('/api/public/visit', apiAccessGuard, (req, res) => {
     try {
@@ -122,7 +123,6 @@ const scrapeCreatorsRoutes = require('./routes/scrapecreators');
 const adminRoutes = require('./routes/admin');
 const feedbackRoutes = require('./routes/feedback');
 
-// Pasang Pelindung Khusus di semua route ini
 app.use('/api/admin', adminRoutes);
 app.use('/api/public/feedback', apiAccessGuard, feedbackRoutes);
 app.use('/api/playstore', apiAccessGuard, playstoreRoutes);

@@ -46,6 +46,7 @@ import { BerandaIcon } from './lib/berandaIcons.jsx';
 import { hasAcceptedTerms } from './lib/termsStorage';
 import { apiCatalog, catalogMeta } from './config/apiCatalog';
 import { fetchApi, apiUrl } from './utils/apiFetch';
+import { getAccessAuthHeaders } from './utils/apiAccess';
 
 const LEGACY_IDS = ['linkedin', 'youtube', 'playstore', 'news', 'tokopedia'];
 
@@ -190,9 +191,17 @@ function App() {
     if (!termsAccepted) return;
     try {
       if (sessionStorage.getItem('scraptor_visit_logged')) return;
-      fetch(apiUrl('/api/public/visit'), { method: 'POST', credentials: 'same-origin' }).catch(
-        () => {}
-      );
+      (async () => {
+        try {
+          const auth = await getAccessAuthHeaders();
+          await fetch(apiUrl('/api/public/visit'), {
+            method: 'POST',
+            headers: { ...auth },
+          });
+        } catch {
+          /* ignore */
+        }
+      })();
       sessionStorage.setItem('scraptor_visit_logged', '1');
     } catch {
       /* ignore */

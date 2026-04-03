@@ -1,6 +1,6 @@
 /**
- * Dev: string kosong → request ke origin Vite; `vite.config.js` mem-proxy `/api` ke backend :5001.
- * Produksi: fallback localhost:5001 kecuali VITE_API_BASE_URL di-set (URL backend Anda).
+ * Dev: kosong → `/api` lewat proxy Vite ke backend :3008.
+ * Prod: set VITE_API_BASE_URL ke URL publik API (mis. https://scraptorapi.bica.ca).
  */
 const explicit = import.meta.env.VITE_API_BASE_URL;
 export const API_BASE =
@@ -8,4 +8,11 @@ export const API_BASE =
     ? explicit
     : import.meta.env.DEV
       ? ''
-      : 'http://localhost:5001';
+      : 'http://localhost:3008';
+
+/** URL absolut ke API (untuk fetch handshake token, axios, dll.) */
+export function apiUrl(path) {
+  const b = (API_BASE || '').replace(/\/$/, '');
+  const p = path.startsWith('/') ? path : `/${path}`;
+  return `${b}${p}`;
+}

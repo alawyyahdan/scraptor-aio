@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X } from 'lucide-react';
 import { apiUrl } from '../utils/apiFetch';
+import { getAccessAuthHeaders } from '../utils/apiAccess';
 
 const initial = {
   name: '',
@@ -24,10 +25,10 @@ export default function FeedbackModal({ open, onClose }) {
     setBusy(true);
     setStatus(null);
     try {
+      const auth = await getAccessAuthHeaders();
       const res = await fetch(apiUrl('/api/public/feedback'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
+        headers: { ...auth, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: form.name.trim(),
           email: form.email.trim(),

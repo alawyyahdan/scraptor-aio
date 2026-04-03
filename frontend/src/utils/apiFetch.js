@@ -1,12 +1,7 @@
-import { API_BASE } from '../config/apiBase';
-import { generateSignature } from './signature';
+import { apiUrl } from '../config/apiBase';
+import { getAccessAuthHeaders, invalidateAccessToken } from './apiAccess';
 
-/** URL lengkap untuk API (dev: path relatif `/api/...` lewat proxy Vite) */
-export function apiUrl(path) {
-  const b = (API_BASE || '').replace(/\/$/, '');
-  const p = path.startsWith('/') ? path : `/${path}`;
-  return `${b}${p}`;
-}
+export { apiUrl };
 
 function assertNotHtml(text) {
   const t = text.trim();
@@ -18,22 +13,30 @@ function assertNotHtml(text) {
   return t;
 }
 
-async function injectHeader(init) {
-  const { signature, timestamp } = await generateSignature();
-  return {
-    ...init,
-    headers: {
-      ...init.headers,
-      'X-Scraptor-Signature': signature,
-      'X-Scraptor-Timestamp': timestamp,
-    },
+async function withAccessAuth(path, init = {}) {
+  const skip =
+    path.includes('/public/access-token') ||
+    path.includes('/public/config') ||
+    path.includes('/api/auth/login');
+  const auth = skip ? {} : await getAccessAuthHeaders();
+  const headers = {
+    ...auth,
+    ...(init.headers || {}),
   };
+  return { ...init, headers };
 }
 
 /** Fetch API: lempar error berisi pesan backend jika !ok */
 export async function fetchJson(path, init = {}) {
-  const finalInit = await injectHeader(init);
-  const res = await fetch(apiUrl(path), finalInit);
+  const doFetch = async () => {
+    const finalInit = await withAccessAuth(path, init);
+    return fetch(apiUrl(path), finalInit);
+  };
+  let res = await doFetch();
+  if (res.status === 401 && !path.includes('/public/access-token')) {
+    invalidateAccessToken();
+    res = await doFetch();
+  }
   const text = await res.text();
   const t = assertNotHtml(text);
   let data;
@@ -50,8 +53,15 @@ export async function fetchJson(path, init = {}) {
 
 /** Sama fetchJson tapi kembalikan { ok, status, data } untuk skema error HTTP yang ditangani UI */
 export async function fetchApi(path, init = {}) {
-  const finalInit = await injectHeader(init);
-  const res = await fetch(apiUrl(path), finalInit);
+  const doFetch = async () => {
+    const finalInit = await withAccessAuth(path, init);
+    return fetch(apiUrl(path), finalInit);
+  };
+  let res = await doFetch();
+  if (res.status === 401 && !path.includes('/public/access-token')) {
+    invalidateAccessToken();
+    res = await doFetch();
+  }
   const text = await res.text();
   try {
     const t = assertNotHtml(text);

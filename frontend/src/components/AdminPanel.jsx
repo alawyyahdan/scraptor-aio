@@ -1250,7 +1250,7 @@ export default function AdminPanel({ authToken, apiCatalog, onFeaturesSaved }) {
                   Sidebar — Legacy v1
                   <HelpTooltip
                     title="Local scrapers"
-                    text="Modules that hit the Scraptor backend (port 5001), not Scrape Creators."
+                    text="Modules that hit the Scraptor backend (port 3008), not Scrape Creators."
                   />
                 </h3>
                 <div className="grid gap-2">
