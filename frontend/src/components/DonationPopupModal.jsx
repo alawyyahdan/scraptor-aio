@@ -69,7 +69,7 @@ export default function DonationPopupModal({
         className={`absolute inset-0 bg-slate-950/60 transition-opacity ${
           canClose ? 'cursor-pointer' : 'cursor-default'
         }`}
-        aria-label={canClose ? 'Tutup' : 'Menunggu timer'}
+        aria-label={canClose ? 'Close' : 'Timer in progress'}
         onClick={canClose ? onClose : undefined}
       />
       <div
@@ -100,7 +100,7 @@ export default function DonationPopupModal({
           <figure className="mx-auto w-fit max-w-[13rem] overflow-hidden rounded-xl border border-slate-200 leading-none dark:border-slate-600">
             <img
               src={src}
-              alt="Kode QR QRIS"
+              alt="QRIS QR code"
               className="block h-auto max-h-[13rem] w-auto max-w-[13rem] object-contain"
             />
           </figure>
@@ -122,7 +122,7 @@ export default function DonationPopupModal({
               rel="noopener noreferrer"
               className="flex w-full items-center justify-center rounded-lg border border-[#0070ba]/35 bg-[#0070ba]/10 py-2.5 text-center text-sm font-semibold text-[#005ea6] transition hover:bg-[#0070ba]/16 dark:border-[#009cde]/40 dark:bg-[#009cde]/12 dark:text-[#7ec8ff] dark:hover:bg-[#009cde]/20"
             >
-              {paypalLabel || 'Donasi via PayPal'}
+              {paypalLabel || 'Donate with PayPal'}
             </a>
           </div>
         ) : null}
@@ -130,11 +130,11 @@ export default function DonationPopupModal({
         <div className="space-y-2 border-t border-slate-100 px-4 py-3 dark:border-slate-800">
           {closeDelayEnabled && closeDelaySeconds > 0 && !canClose ? (
             <p className="text-center text-[0.8125rem] text-slate-500 dark:text-slate-400">
-              Tutup dalam{' '}
+              Closes in{' '}
               <span className="tabular-nums font-medium text-rose-600 dark:text-rose-400">
                 {remaining}
-              </span>{' '}
-              dtk
+              </span>
+              {remaining === 1 ? ' second' : ' seconds'}
             </p>
           ) : null}
           <button

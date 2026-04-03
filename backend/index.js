@@ -109,9 +109,51 @@ app.post('/api/public/visit', apiAccessGuard, (req, res) => {
     }
 });
 
-// Basic Route
+// Root: HTML sederhana di browser; JSON untuk klien API / ?format=json
 app.get('/', (req, res) => {
-    res.json({ message: 'Welcome to Multiplatform Crawler API (Scraptor)' });
+    const accept = req.get('Accept') || '';
+    const fetchDest = req.get('Sec-Fetch-Dest');
+    const forceJson =
+        req.query.format === 'json' || /\bapplication\/json\b/i.test(accept);
+    const wantsHtml =
+        !forceJson &&
+        (/\btext\/html\b/i.test(accept) ||
+            fetchDest === 'document' ||
+            fetchDest === 'iframe');
+
+    if (wantsHtml) {
+        res.type('html').send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Scraptor API</title>
+<style>
+  body{font-family:system-ui,-apple-system,sans-serif;max-width:36rem;margin:3rem auto;padding:0 1.25rem;line-height:1.5;color:#1e293b;background:#f8fafc}
+  h1{font-size:1.35rem;font-weight:700;margin:0 0 .5rem}
+  p{color:#64748b;font-size:.95rem;margin:.6rem 0}
+  code{font-size:.85rem;background:#e2e8f0;padding:.15rem .4rem;border-radius:.25rem}
+  a{color:#4f46e5;text-decoration:none;font-weight:600}
+  a:hover{text-decoration:underline}
+  hr{border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0}
+</style>
+</head>
+<body>
+  <h1>Scraptor API</h1>
+  <p>REST endpoints live under <code>/api/…</code>. This host serves machine-to-machine requests (e.g. from <a href="https://scraptor.bica.ca">scraptor.bica.ca</a>).</p>
+  <p>Health check: <code>GET /api/public/config</code> (JSON).</p>
+  <hr/>
+  <p>Machine-readable root: <a href="/?format=json"><code>?format=json</code></a> or <code>Accept: application/json</code>.</p>
+</body>
+</html>`);
+        return;
+    }
+
+    res.json({
+        name: 'Scraptor API',
+        message: 'Use /api/… endpoints. Append ?format=json when opening in a browser.',
+        ui: 'https://scraptor.bica.ca',
+    });
 });
 
 // Import routes
