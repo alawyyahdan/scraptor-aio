@@ -12,6 +12,7 @@ const { getApiKey, getPublicConfig } = require('./lib/adminSettings');
 const { buildStatsPayload } = require('./lib/statsPayload');
 const activityLog = require('./lib/activityLog');
 const publicTraffic = require('./lib/publicTraffic');
+const adminUsers = require('./lib/adminUsers');
 const {
     buildCorsOptions,
     issuePublicAccessToken,
@@ -21,21 +22,21 @@ const {
 app.use(cors(buildCorsOptions()));
 app.use(express.json());
 
-if (process.env.NODE_ENV === 'production') {
-    console.log('[cors] permissive (reflect request Origin)');
-}
+adminUsers.ensureSeeded();
 
-// Auth Route
+// Auth Route (kredensial di data/admin-users.json, seed sekali dari ADMIN_USER / ADMIN_PASS)
 app.post('/api/auth/login', (req, res) => {
     const { username, password } = req.body;
-    
-    // Check against .env credentials
-    if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
-        // Generate a token
-        const token = jwt.sign({ username, role: 'admin' }, process.env.JWT_SECRET || JWT_SECRET, { expiresIn: '12h' });
-        res.json({ token, message: "Login successful" });
+    const user = adminUsers.verifyLogin(username, password);
+    if (user) {
+        const token = jwt.sign(
+            { username: user.username, role: 'admin' },
+            process.env.JWT_SECRET || JWT_SECRET,
+            { expiresIn: '12h' }
+        );
+        res.json({ token, message: 'Login successful' });
     } else {
-        res.status(401).json({ error: "Invalid username or password" });
+        res.status(401).json({ error: 'Invalid username or password' });
     }
 });
 

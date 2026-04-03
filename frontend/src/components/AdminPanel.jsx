@@ -24,6 +24,7 @@ import { fetchJson } from '../utils/apiFetch';
 import HelpTooltip from './HelpTooltip';
 import ToggleSwitch from './ToggleSwitch';
 import AdminSiteTab from './AdminSiteTab';
+import AdminAccountsTab from './AdminAccountsTab';
 
 function localYmd(d) {
   const x = new Date(d);
@@ -52,7 +53,7 @@ const LEGACY_ITEMS = [
   { id: 'tokopedia', label: 'Tokopedia', hint: 'Store reviews (Puppeteer)' },
 ];
 
-export default function AdminPanel({ authToken, apiCatalog, onFeaturesSaved }) {
+export default function AdminPanel({ authToken, setAuthToken, apiCatalog, onFeaturesSaved }) {
   const [tab, setTab] = useState('ringkasan');
   const [stats, setStats] = useState(null);
   const [statsLoading, setStatsLoading] = useState(true);
@@ -340,6 +341,7 @@ export default function AdminPanel({ authToken, apiCatalog, onFeaturesSaved }) {
     { id: 'ringkasan', label: 'Summary', icon: LayoutDashboard },
     { id: 'pengaturan', label: 'API & features', icon: Settings2 },
     { id: 'kustomisasi', label: 'Customize', icon: Palette },
+    { id: 'admins', label: 'Admins', icon: Users },
   ];
 
   return (
@@ -935,6 +937,20 @@ export default function AdminPanel({ authToken, apiCatalog, onFeaturesSaved }) {
               }}
             />
           )}
+        </div>
+      )}
+
+      {tab === 'admins' && (
+        <div className="space-y-4">
+          {settingsErr && (
+            <div className="text-red-600 dark:text-red-400 text-sm px-1">{settingsErr}</div>
+          )}
+          <AdminAccountsTab
+            authToken={authToken}
+            setAuthToken={setAuthToken}
+            setSettingsErr={setSettingsErr}
+            showToast={showToast}
+          />
         </div>
       )}
 

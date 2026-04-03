@@ -1,12 +1,22 @@
 const express = require('express');
+const jwt = require('jsonwebtoken');
 const router = express.Router();
-const { verifyToken } = require('../middleware/auth');
+const { verifyToken, JWT_SECRET } = require('../middleware/auth');
 const {
   readSettings,
   writeSettings,
   normalizeSite,
   normalizeSubmitQuotaExemptIps,
 } = require('../lib/adminSettings');
+const adminUsers = require('../lib/adminUsers');
+
+function signAdminToken(username) {
+  return jwt.sign(
+    { username, role: 'admin' },
+    process.env.JWT_SECRET || JWT_SECRET,
+    { expiresIn: '12h' }
+  );
+}
 
 function simpleEmailOk(s) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || '').trim());
@@ -149,6 +159,57 @@ router.post('/settings', verifyToken, (req, res) => {
     site: next.site,
     submitQuotaExemptIps: next.submitQuotaExemptIps || [],
   });
+});
+
+router.get('/accounts', verifyToken, (req, res) => {
+  try {
+    adminUsers.ensureSeeded();
+    res.json({
+      self: adminUsers.normUsername(req.user.username),
+      users: adminUsers.listPublic(),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/accounts', verifyToken, (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    adminUsers.addUser(username, password);
+    res.json({ ok: true, users: adminUsers.listPublic() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.patch('/account', verifyToken, (req, res) => {
+  try {
+    const { oldPassword, newUsername, newPassword } = req.body || {};
+    const r = adminUsers.updateSelf(
+      req.user.username,
+      { oldPassword, newUsername, newPassword },
+      signAdminToken
+    );
+    res.json({
+      ok: true,
+      username: r.username,
+      ...(r.newToken ? { token: r.newToken } : {}),
+      users: adminUsers.listPublic(),
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/accounts/:username', verifyToken, (req, res) => {
+  try {
+    const name = decodeURIComponent(String(req.params.username || ''));
+    adminUsers.removeUser(req.user.username, name);
+    res.json({ ok: true, users: adminUsers.listPublic() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 module.exports = router;

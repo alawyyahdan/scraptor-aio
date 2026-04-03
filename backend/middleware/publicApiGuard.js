@@ -1,16 +1,6 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
-/**
- * CORS: reflect Origin (credentials OK).
- */
-function buildCorsOptions() {
-  return {
-    origin: true,
-    credentials: true,
-  };
-}
-
 function parseList(raw) {
   if (!raw || !String(raw).trim()) return [];
   return String(raw)
@@ -19,7 +9,41 @@ function parseList(raw) {
     .filter(Boolean);
 }
 
-/** Origin yang boleh minta access token (bukan secret browser). */
+/** Production + FRONTEND_ORIGINS terisi → kunci ketat (CORS + Origin di guard). */
+function strictFrontendLock() {
+  return (
+    process.env.NODE_ENV === 'production' &&
+    parseList(process.env.FRONTEND_ORIGINS).length > 0
+  );
+}
+
+function frontendOriginSet() {
+  return new Set(parseList(process.env.FRONTEND_ORIGINS));
+}
+
+/**
+ * Production dengan whitelist: hanya origin frontend (bukan reflect semua).
+ * Dev / tanpa FRONTEND_ORIGINS: tetap reflect (nyaman lokal).
+ */
+function buildCorsOptions() {
+  if (strictFrontendLock()) {
+    const allowed = frontendOriginSet();
+    return {
+      origin(origin, callback) {
+        if (!origin) return callback(null, false);
+        if (allowed.has(origin)) return callback(null, true);
+        return callback(null, false);
+      },
+      credentials: true,
+    };
+  }
+  return {
+    origin: true,
+    credentials: true,
+  };
+}
+
+/** Origin yang boleh minta access token. */
 function allowedHandshakeOrigins() {
   const fromEnv = parseList(process.env.FRONTEND_ORIGINS);
   if (fromEnv.length) return new Set(fromEnv);
@@ -51,9 +75,6 @@ const ACCESS_TTL_SEC = Math.min(
   Math.max(60, parseInt(process.env.PUBLIC_ACCESS_TTL_SEC || '180', 10) || 180)
 );
 
-/**
- * Terbitkan JWT sekali pakai identitas singkat; Origin dicatat dan dicek ulang.
- */
 function issuePublicAccessToken(req, res) {
   let allowed;
   try {
@@ -101,10 +122,6 @@ function readBearer(req) {
   return alt ? String(alt).trim() : null;
 }
 
-/**
- * Harus dipakai di bawah CORS + body parser.
- * Lewati untuk rute publik (token, config, login, health).
- */
 function apiAccessGuard(req, res, next) {
   const secret = getPublicAccessSecret();
   const raw = readBearer(req);
@@ -120,10 +137,20 @@ function apiAccessGuard(req, res, next) {
     if (payload.scraptor !== 'access' || !payload.origin) {
       return res.status(403).json({ error: 'Token akses tidak valid.' });
     }
+
     const origin = req.get('origin');
+    if (strictFrontendLock() && !origin) {
+      return res.status(403).json({
+        error: 'Permintaan ditolak: header Origin wajib untuk API ini.',
+      });
+    }
+    if (strictFrontendLock() && origin && !frontendOriginSet().has(origin)) {
+      return res.status(403).json({ error: 'Origin tidak diizinkan.' });
+    }
     if (origin && origin !== payload.origin) {
       return res.status(403).json({ error: 'Token tidak cocok dengan asal permintaan.' });
     }
+
     req.publicAccess = payload;
     return next();
   } catch (e) {

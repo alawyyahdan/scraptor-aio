@@ -8,13 +8,6 @@
  */
 const explicit = import.meta.env.VITE_API_BASE_URL;
 
-if (import.meta.env.PROD && (explicit === undefined || explicit === '')) {
-  console.warn(
-    '[Scraptor] Build tanpa VITE_API_BASE_URL — permintaan API memakai path relatif /api di host ini. ' +
-      'Kalau API di subdomain/host lain, rebuild dengan VITE_API_BASE_URL=https://…'
-  );
-}
-
 export const API_BASE =
   explicit !== undefined && explicit !== ''
     ? explicit

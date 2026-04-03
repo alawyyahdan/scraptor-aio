@@ -293,6 +293,7 @@ function App() {
       return (
         <AdminPanel
           authToken={authToken}
+          setAuthToken={setAuthToken}
           apiCatalog={apiCatalog}
           onFeaturesSaved={() => setFeatureEpoch((n) => n + 1)}
         />
