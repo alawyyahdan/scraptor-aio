@@ -126,7 +126,11 @@ export default function News() {
             </option>
             {categories &&
               Object.entries(categories).map(([portal, sections]) => (
-                <optgroup key={portal} label={portal}>
+                <optgroup
+                  key={portal}
+                  label={portal}
+                  disabled={portal === 'Detik' || portal === 'CNN Indonesia'}
+                >
                   {Object.entries(sections).map(([label, catUrl]) => (
                     <option key={`${portal}-${label}`} value={catUrl}>
                       {label}
@@ -139,7 +143,7 @@ export default function News() {
             <p className="mt-1.5 text-xs text-red-600 dark:text-red-400">{categoriesErr}</p>
           ) : (
             <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
-              Fixed list matches server (Kompas, Detik, CNN Indonesia, Liputan6).
+              Kompas & Liputan6 aktif. Detik & CNN Indonesia sementara dinonaktifkan.
             </p>
           )}
         </div>
