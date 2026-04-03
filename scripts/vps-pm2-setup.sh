@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# Setup VPS: pasang dependency, build frontend, atur port & URL API, jalankan PM2 (backend + frontend terpisah).
-# Prasyarat: Node.js 18+, npm. PM2 global: npm i -g pm2
-# Jalankan dari mana pun: bash scripts/vps-pm2-setup.sh
+# Setup VPS: dependency, .env, build frontend (VITE_API_BASE_URL), PM2.
+# Input hanya 2: URL frontend (yang dibuka di browser) dan URL API publik.
+# Port proses di server tetap 3008 (backend) / 3009 (vite preview) — di belakang nginx.
+#
+#   bash scripts/vps-pm2-setup.sh
+#
+# Opsional (tanpa prompt): SCRAPTOR_SETUP_FRONTEND_URL=... SCRAPTOR_SETUP_API_URL=... bash scripts/vps-pm2-setup.sh
+# Port override: SCRAPTOR_BACKEND_PORT=3008 SCRAPTOR_FRONTEND_PORT=3009 (default)
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+BP="${SCRAPTOR_BACKEND_PORT:-3008}"
+FP="${SCRAPTOR_FRONTEND_PORT:-3009}"
 
 upsert_env_line() {
   local file="$1" key="$2" val="$3"
@@ -19,76 +27,70 @@ upsert_env_line() {
   fi
 }
 
-merge_cors_frontend() {
-  local file="$1"
-  local ph="$2"
-  local fport="$3"
-  local o1="http://${ph}:${fport}"
-  local o2="http://127.0.0.1:${fport}"
-  local o3="http://localhost:${fport}"
-  local merged="${o1},${o2},${o3}"
-
-  if [[ ! -f "$file" ]]; then
-    printf 'CORS_ORIGINS=%s\n' "$merged" >>"$file"
-    return
+# Trim, buang slash akhir; jika tanpa skema → https://
+normalize_input_url() {
+  local u="$1"
+  u="${u#"${u%%[![:space:]]*}"}"
+  u="${u%"${u##*[![:space:]]}"}"
+  u="${u%/}"
+  [[ -z "$u" ]] && { echo ""; return; }
+  if [[ ! "$u" =~ ^https?:// ]]; then
+    u="https://${u}"
   fi
+  echo "$u"
+}
 
-  if grep -q '^CORS_ORIGINS=' "$file"; then
-    local cur
-    cur=$(grep '^CORS_ORIGINS=' "$file" | head -1 | cut -d= -f2-)
-    local add="$merged"
-    if [[ -n "$cur" ]]; then
-      for piece in "${o1}" "${o2}" "${o3}"; do
-        if [[ ",${cur}," != *",${piece},"* ]]; then
-          cur="${cur},${piece}"
-        fi
-      done
-      add="$cur"
-    fi
-    upsert_env_line "$file" CORS_ORIGINS "$add"
+# https://foo.com/path → https://foo.com  ;  https://foo.com:3009/x → https://foo.com:3009
+origin_only() {
+  local u="$1"
+  if [[ "$u" =~ ^(https?://[^/]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
   else
-    printf 'CORS_ORIGINS=%s\n' "$merged" >>"$file"
+    echo "$u"
   fi
 }
 
-echo "=== Scraptor — setup PM2 (backend + frontend terpisah) ==="
+echo "=== Scraptor — setup VPS (2 URL saja) ==="
+echo ""
+echo "Contoh:"
+echo "  URL frontend  → https://scraptor.bica.ca     (alamat yang user buka)"
+echo "  URL API       → https://scraptorapi.bica.ca  (nginx → localhost:${BP})"
+echo ""
+echo "Port di server (boleh diubah lewat env sebelum jalankan skrip): backend=${BP}, frontend preview=${FP}"
 echo ""
 
-read -rp "Port backend [3008]: " BP
-BP=${BP:-3008}
-read -rp "Port frontend — Vite preview [3009]: " FP
-FP=${FP:-3009}
+if [[ -n "${SCRAPTOR_SETUP_FRONTEND_URL:-}" && -n "${SCRAPTOR_SETUP_API_URL:-}" ]]; then
+  RAW_FE="${SCRAPTOR_SETUP_FRONTEND_URL}"
+  RAW_API="${SCRAPTOR_SETUP_API_URL}"
+  echo "Pakai env: FRONTEND=${RAW_FE} | API=${RAW_API}"
+else
+  read -rp "URL frontend (https://...): " RAW_FE
+  read -rp "URL API publik (https://...): " RAW_API
+fi
 
-read -rp "Host publik untuk URL (IP atau domain, tanpa http/https): " PH
-PH=${PH:-127.0.0.1}
-PH="${PH#http://}"
-PH="${PH#https://}"
-PH="${PH%%/*}"
+FE_URL="$(normalize_input_url "$RAW_FE")"
+API_URL="$(normalize_input_url "$RAW_API")"
 
-DEF_API="http://${PH}:${BP}"
-read -rp "URL API untuk browser — tanpa slash di akhir [${DEF_API}]: " APIBASE
-APIBASE=${APIBASE:-"$DEF_API"}
-APIBASE="${APIBASE%/}"
+if [[ -z "$FE_URL" || -z "$API_URL" ]]; then
+  echo "Kedua URL wajib diisi."
+  exit 1
+fi
+
+FE_ORIGIN="$(origin_only "$FE_URL")"
+API_ORIGIN="$(origin_only "$API_URL")"
 
 DEPLOY_ENV="$ROOT/deploy.env"
 cat >"$DEPLOY_ENV" <<EOF
-# Dibuat otomatis oleh scripts/vps-pm2-setup.sh — jangan commit (lihat .gitignore)
+# Dibuat otomatis oleh scripts/vps-pm2-setup.sh — jangan commit
 export SCRAPTOR_BACKEND_PORT=${BP}
 export SCRAPTOR_FRONTEND_PORT=${FP}
 EOF
 
 ENV_BACKEND="$ROOT/backend/.env"
-if [[ ! -f "$ENV_BACKEND" ]]; then
-  touch "$ENV_BACKEND"
-fi
-upsert_env_line "$ENV_BACKEND" PORT "${BP}"
-merge_cors_frontend "$ENV_BACKEND" "${PH}" "${FP}"
+[[ -f "$ENV_BACKEND" ]] || touch "$ENV_BACKEND"
 
-DEF_FE_ORIG="http://${PH}:${FP}"
-read -rp "FRONTEND_ORIGINS — untuk token API (pisah koma) [${DEF_FE_ORIG}]: " FEORIG
-FEORIG=${FEORIG:-"$DEF_FE_ORIG"}
-FEORIG="${FEORIG%/}"
-upsert_env_line "$ENV_BACKEND" FRONTEND_ORIGINS "$FEORIG"
+upsert_env_line "$ENV_BACKEND" PORT "${BP}"
+upsert_env_line "$ENV_BACKEND" FRONTEND_ORIGINS "${FE_ORIGIN}"
 
 if [[ -f "$ENV_BACKEND" ]] && ! grep -q '^PUBLIC_ACCESS_SECRET=' "$ENV_BACKEND"; then
   if command -v openssl &>/dev/null; then
@@ -99,12 +101,15 @@ fi
 
 FE_PROD_LOCAL="$ROOT/frontend/.env.production.local"
 cat >"$FE_PROD_LOCAL" <<EOF
-# Build-time: base URL API untuk browser (Vite)
-VITE_API_BASE_URL=${APIBASE}
+# Dibuat oleh scripts/vps-pm2-setup.sh — jangan commit
+VITE_API_BASE_URL=${API_ORIGIN}
 EOF
 
 echo ""
-echo "Menulis: deploy.env, backend/.env (PORT, CORS_ORIGINS, FRONTEND_ORIGINS), frontend/.env.production.local"
+echo "Menulis:"
+echo "  deploy.env              → port PM2 ${BP} / ${FP}"
+echo "  backend/.env            → FRONTEND_ORIGINS=${FE_ORIGIN}  PORT=${BP}"
+echo "  frontend/.env.production.local → VITE_API_BASE_URL=${API_ORIGIN}"
 echo ""
 
 if ! command -v npm &>/dev/null; then
@@ -118,14 +123,13 @@ echo "npm install (backend)..."
 echo "npm install (frontend)..."
 (cd "$ROOT/frontend" && npm install)
 
-echo "npm run build (frontend, VITE_API_BASE_URL=${APIBASE})..."
+echo "npm run build (frontend)…"
 (cd "$ROOT/frontend" && npm run build)
 
 if ! command -v pm2 &>/dev/null; then
   echo ""
-  echo "PM2 belum terpasang. Pasang: npm i -g pm2"
-  echo "Lalu jalankan:"
-  echo "  set -a && source $DEPLOY_ENV && set +a && cd $ROOT && pm2 start ecosystem.config.cjs && pm2 save"
+  echo "PM2 belum terpasang: npm i -g pm2"
+  echo "Lalu: set -a && source $DEPLOY_ENV && set +a && cd $ROOT && pm2 start ecosystem.config.cjs && pm2 save"
   exit 1
 fi
 
@@ -141,9 +145,10 @@ pm2 save
 
 echo ""
 echo "Selesai."
-echo "  Backend (PM2: scraptor-backend)  → listen PORT=${BP} (cek backend/.env)"
-echo "  Frontend (PM2: scraptor-frontend) → Vite preview host 0.0.0.0 port ${FP}"
-echo "  Browser memanggil API: ${APIBASE}"
+echo "  Buka situs dari: ${FE_ORIGIN}"
+echo "  Browser memanggil API: ${API_ORIGIN}"
+echo "  nginx → backend http://127.0.0.1:${BP} , UI static/preview → 127.0.0.1:${FP}"
 echo ""
-echo "Perintah berguna: pm2 status | pm2 logs | pm2 restart scraptor-backend scraptor-frontend"
-echo "Agar hidup setelah reboot VPS: pm2 startup   lalu jalankan perintah yang ditampilkan, lalu pm2 save"
+echo "pm2 status | pm2 logs"
+echo "Setelah reboot: pm2 startup  → ikuti perintah → pm2 save"
+echo ""

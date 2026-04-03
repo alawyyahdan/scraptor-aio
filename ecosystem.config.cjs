@@ -1,9 +1,9 @@
 /**
  * PM2: backend (Express) + frontend (`vite preview`).
- * Default sama dengan dev lokal: backend 3008, frontend 3009 (lihat vite.config.js proxy).
+ * Port default 3008 / 3009 (nginx ke publik pakai URL dari scripts/vps-pm2-setup.sh).
  * Override: SCRAPTOR_BACKEND_PORT, SCRAPTOR_FRONTEND_PORT
  *
- *   set -a && source ./deploy.env && set +a && pm2 start ecosystem.config.cjs
+ *   bash scripts/vps-pm2-setup.sh
  */
 const path = require('path');
 
