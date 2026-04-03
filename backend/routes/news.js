@@ -6,6 +6,48 @@ const cheerio = require('cheerio');
 const activityLog = require('../lib/activityLog');
 const publicTraffic = require('../lib/publicTraffic');
 
+/** Header mirip browser — banyak portal (CNN/Detik, dll.) memblokir request “bot” polos (403). */
+const BROWSER_HEADERS = {
+    'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    Accept:
+        'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Cache-Control': 'no-cache',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+};
+
+function headersForCategoryFetch(categoryUrl) {
+    let origin;
+    try {
+        origin = new URL(categoryUrl).origin;
+    } catch {
+        return { ...BROWSER_HEADERS };
+    }
+    return {
+        ...BROWSER_HEADERS,
+        Referer: `${origin}/`,
+    };
+}
+
+/** Fetch artikel dari halaman indeks: Referer = URL kategori (bukan Sec-Fetch navigasi palsu). */
+function headersForArticleFetch(articleUrl, categoryUrl) {
+    return {
+        'User-Agent': BROWSER_HEADERS['User-Agent'],
+        Accept: BROWSER_HEADERS.Accept,
+        'Accept-Language': BROWSER_HEADERS['Accept-Language'],
+        Referer: categoryUrl,
+    };
+}
+
+const CATEGORY_FETCH_MS = 45000;
+const PER_ARTICLE_EXTRACT_MS = 28000;
+const EXTRACT_CONCURRENCY = 3;
+
 /** Same structure as app.py NEWS_CATEGORIES — legacy portals & section URLs only. */
 const NEWS_CATEGORIES = {
     Kompas: {
@@ -111,12 +153,24 @@ router.post('/scrape', async (req, res) => {
 
         let html;
         try {
-            const pageRes = await axios.get(category_url, { timeout: 20000, validateStatus: () => true });
+            const pageRes = await axios.get(category_url, {
+                timeout: CATEGORY_FETCH_MS,
+                validateStatus: () => true,
+                headers: headersForCategoryFetch(category_url),
+                responseType: 'text',
+            });
             if (pageRes.status >= 400) {
                 return res.status(502).json({
                     status: 'error',
                     message: `Failed to fetch category page: HTTP ${pageRes.status}`,
-                    debug: { category_url, status: pageRes.status },
+                    debug: {
+                        category_url,
+                        status: pageRes.status,
+                        hint:
+                            pageRes.status === 403
+                                ? 'Portal may block non-browser traffic or datacenter IPs. Try again later or use a residential network.'
+                                : undefined,
+                    },
                 });
             }
             html = pageRes.data;
@@ -146,27 +200,47 @@ router.post('/scrape', async (req, res) => {
 
         const extractFailures = [];
         const articles = [];
-        for (const link of linksLimited) {
+
+        async function extractOne(link) {
             try {
-                const articleData = await extract(link);
+                const articleData = await extract(link, {}, {
+                    headers: headersForArticleFetch(link, category_url),
+                    signal: AbortSignal.timeout(PER_ARTICLE_EXTRACT_MS),
+                });
                 if (articleData && (articleData.title || articleData.content)) {
-                    articles.push({
-                        title: articleData.title,
-                        url: articleData.url || link,
-                        authors: articleData.author ? [articleData.author] : [],
-                        publish_date: articleData.published || null,
-                        text: articleData.content ? articleData.content.replace(/<[^>]*>?/gm, ' ').substring(0, 500) + '...' : '',
-                        summary: articleData.description || '',
-                        keywords: [],
-                        top_image: articleData.image || ''
-                    });
-                } else {
-                    extractFailures.push({ link, error: 'Extractor returned empty title/content' });
+                    return {
+                        ok: true,
+                        row: {
+                            title: articleData.title,
+                            url: articleData.url || link,
+                            authors: articleData.author ? [articleData.author] : [],
+                            publish_date: articleData.published || null,
+                            text: articleData.content
+                                ? articleData.content.replace(/<[^>]*>?/gm, ' ').substring(0, 500) + '...'
+                                : '',
+                            summary: articleData.description || '',
+                            keywords: [],
+                            top_image: articleData.image || '',
+                        },
+                    };
                 }
+                return {
+                    ok: false,
+                    fail: { link, error: 'Extractor returned empty title/content' },
+                };
             } catch (err) {
                 const msg = err.message || String(err);
-                extractFailures.push({ link, error: msg });
                 console.warn('[news] extract failed:', link, msg);
+                return { ok: false, fail: { link, error: msg } };
+            }
+        }
+
+        for (let i = 0; i < linksLimited.length; i += EXTRACT_CONCURRENCY) {
+            const batch = linksLimited.slice(i, i + EXTRACT_CONCURRENCY);
+            const settled = await Promise.all(batch.map((link) => extractOne(link)));
+            for (const r of settled) {
+                if (r.ok) articles.push(r.row);
+                else extractFailures.push(r.fail);
             }
         }
 
