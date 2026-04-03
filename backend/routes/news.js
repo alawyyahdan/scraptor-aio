@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { extract } = require('@extractus/article-extractor');
+const { extract, extractFromHtml } = require('@extractus/article-extractor');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const puppeteer = require('puppeteer');
 const activityLog = require('../lib/activityLog');
 const publicTraffic = require('../lib/publicTraffic');
+const { resolveNewsSessionProxy } = require('../lib/newsProxy');
 
 /** Header mirip browser — banyak portal (CNN/Detik, dll.) memblokir request “bot” polos (403). */
 const BROWSER_HEADERS = {
@@ -44,9 +46,139 @@ function headersForArticleFetch(articleUrl, categoryUrl) {
     };
 }
 
-const CATEGORY_FETCH_MS = 45000;
-const PER_ARTICLE_EXTRACT_MS = 28000;
+const CATEGORY_FETCH_MS = 90000;
+const PER_ARTICLE_EXTRACT_MS = 35000;
 const EXTRACT_CONCURRENCY = 3;
+const PUPPETEER_NAV_MS = 90000;
+
+const PUPPETEER_ARGS = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+];
+
+async function fetchCategoryHtmlAxios(categoryUrl, sessionCtx) {
+    const agents = sessionCtx.axiosAgents || {};
+    return axios.get(categoryUrl, {
+        timeout: CATEGORY_FETCH_MS,
+        maxRedirects: 14,
+        validateStatus: () => true,
+        headers: headersForCategoryFetch(categoryUrl),
+        responseType: 'text',
+        ...agents,
+    });
+}
+
+async function fetchPageHtmlPuppeteer(
+    browser,
+    url,
+    referer,
+    settleMs = 1400,
+    proxyAuth = null
+) {
+    const page = await browser.newPage();
+    try {
+        if (proxyAuth && (proxyAuth.username || proxyAuth.password)) {
+            await page.authenticate({
+                username: proxyAuth.username || '',
+                password: proxyAuth.password || '',
+            });
+        }
+        await page.setUserAgent(BROWSER_HEADERS['User-Agent']);
+        const hdr = { 'Accept-Language': BROWSER_HEADERS['Accept-Language'] };
+        if (referer) hdr.Referer = referer;
+        await page.setExtraHTTPHeaders(hdr);
+        page.setDefaultNavigationTimeout(PUPPETEER_NAV_MS);
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        if (settleMs > 0) {
+            await new Promise((r) => setTimeout(r, settleMs));
+        }
+        return await page.content();
+    } finally {
+        await page.close();
+    }
+}
+
+/** Bukan HTML portal: halaman error Cloudflare / challenge (IP VPS sering error 1005/1020). */
+function detectCdnBlock(html) {
+    if (!html || typeof html !== 'string') {
+        return { blocked: true, reason: 'empty' };
+    }
+    if (html.length < 220 && !html.includes('href=')) {
+        return { blocked: true, reason: 'empty_or_tiny' };
+    }
+    const low = html.toLowerCase();
+    if (
+        low.includes('cf-error-details') ||
+        low.includes('cloudflare ray id') ||
+        low.includes('error-1005') ||
+        low.includes('error 1005') ||
+        low.includes('/5xx-error-landing') ||
+        low.includes('errors.edge.suite') ||
+        (low.includes('cloudflare.com') &&
+            low.includes('error') &&
+            !low.includes('cnnindonesia.com') &&
+            !low.includes('detik.com') &&
+            !low.includes('kompas.com') &&
+            html.length < 30000)
+    ) {
+        return { blocked: true, reason: 'cloudflare_or_cdn' };
+    }
+    if (
+        low.includes('just a moment') ||
+        low.includes('checking your browser before accessing')
+    ) {
+        return { blocked: true, reason: 'cloudflare_challenge' };
+    }
+    return { blocked: false };
+}
+
+/** Set 1 agar tiap artikel bisa buka Puppeteer jika extract gagal (lama di VPS). Default: hanya kategori pakai Puppeteer. */
+const ARTICLE_PUPPETEER = process.env.NEWS_PUPPETEER_ARTICLES === '1';
+
+/**
+ * Axios dulu (ringan). Kalau timeout/403/5xx → Puppeteer (sering jalan di VPS yang diblokir CDN).
+ * Matikan fallback: NEWS_PUPPETEER=0
+ */
+async function loadCategoryHtml(categoryUrl, getBrowser, sessionCtx) {
+    let axiosRes = null;
+    try {
+        axiosRes = await fetchCategoryHtmlAxios(categoryUrl, sessionCtx);
+    } catch {
+        axiosRes = null;
+    }
+    if (axiosRes && axiosRes.status < 400) {
+        return { html: String(axiosRes.data || ''), usedPuppeteer: false };
+    }
+
+    if (process.env.NEWS_PUPPETEER === '0') {
+        const e = new Error(
+            axiosRes
+                ? `Failed to fetch category page: HTTP ${axiosRes.status}`
+                : 'Category page request failed: timeout or network'
+        );
+        e.status = axiosRes?.status;
+        e.code = axiosRes ? 'HTTP_ERROR' : 'ECONNABORTED';
+        throw e;
+    }
+
+    const browser = await getBrowser();
+    if (!browser) {
+        throw new Error('Puppeteer disabled (NEWS_PUPPETEER=0)');
+    }
+    const html = await fetchPageHtmlPuppeteer(
+        browser,
+        categoryUrl,
+        null,
+        1400,
+        sessionCtx.proxyAuth || null
+    );
+    if (!html || html.length < 200) {
+        throw new Error('Puppeteer returned empty category HTML');
+    }
+    return { html, usedPuppeteer: true };
+}
 
 /** Same structure as app.py NEWS_CATEGORIES — legacy portals & section URLs only. */
 const NEWS_CATEGORIES = {
@@ -122,7 +254,10 @@ function isLikelyArticleListUrl(absUrl) {
     }
 
     if (host.includes('cnnindonesia.com')) {
-        return /\/\d{10,}-\d+-\d+\/[^/]+/.test(path);
+        if (/\/\d{10,}-\d+-\d+\/[^/]+/.test(path)) return true;
+        if (/\/\d{9,}-\d+-\d+\/[^/]+/.test(path)) return true;
+        if (/\/\d{8,}-\d{2,}-\d{2,}\/[^/]+/.test(path)) return true;
+        return false;
     }
 
     return false;
@@ -134,11 +269,40 @@ router.get('/categories', (req, res) => {
 });
 
 router.post('/scrape', async (req, res) => {
+    let browserInstance = null;
+    const sessionCtx = {
+        url: null,
+        axiosAgents: {},
+        extractAgent: null,
+        launchProxyArg: null,
+        proxyAuth: null,
+    };
+    async function getBrowser() {
+        if (process.env.NEWS_PUPPETEER === '0') return null;
+        if (!browserInstance) {
+            const args = [...PUPPETEER_ARGS];
+            if (sessionCtx.launchProxyArg) {
+                args.push(`--proxy-server=${sessionCtx.launchProxyArg}`);
+            }
+            browserInstance = await puppeteer.launch({
+                headless: 'new',
+                args,
+            });
+        }
+        return browserInstance;
+    }
+    async function closeBrowser() {
+        if (browserInstance) {
+            await browserInstance.close().catch(() => {});
+            browserInstance = null;
+        }
+    }
+
     try {
         const { category_url, limit = 5 } = req.body;
-        
+
         if (!category_url) {
-            return res.status(400).json({ status: "error", message: "category_url wajib diisi" });
+            return res.status(400).json({ status: 'error', message: 'category_url wajib diisi' });
         }
 
         if (!isAllowedNewsCategoryUrl(category_url)) {
@@ -151,34 +315,46 @@ router.post('/scrape', async (req, res) => {
         const gate = publicTraffic.assertSubmitSlot(req, 'legacy:news');
         if (!gate.ok) return res.status(429).json({ error: gate.error });
 
+        Object.assign(sessionCtx, await resolveNewsSessionProxy());
+
         let html;
+        let usedPuppeteerCategory = false;
         try {
-            const pageRes = await axios.get(category_url, {
-                timeout: CATEGORY_FETCH_MS,
-                validateStatus: () => true,
-                headers: headersForCategoryFetch(category_url),
-                responseType: 'text',
-            });
-            if (pageRes.status >= 400) {
-                return res.status(502).json({
-                    status: 'error',
-                    message: `Failed to fetch category page: HTTP ${pageRes.status}`,
-                    debug: {
-                        category_url,
-                        status: pageRes.status,
-                        hint:
-                            pageRes.status === 403
-                                ? 'Portal may block non-browser traffic or datacenter IPs. Try again later or use a residential network.'
-                                : undefined,
-                    },
-                });
-            }
-            html = pageRes.data;
+            const loaded = await loadCategoryHtml(category_url, getBrowser, sessionCtx);
+            html = loaded.html;
+            usedPuppeteerCategory = loaded.usedPuppeteer;
         } catch (e) {
+            await closeBrowser();
+            const st = e.status;
+            const hint403 =
+                st === 403
+                    ? 'Portal may block plain HTTP from this server. Puppeteer fallback runs unless NEWS_PUPPETEER=0. Ensure Chromium deps are installed on the VPS (`apt install -y chromium-browser` or use Puppeteer bundled Chrome).'
+                    : undefined;
             return res.status(502).json({
                 status: 'error',
-                message: `Category page request failed: ${e.message}`,
-                debug: { category_url, code: e.code },
+                message: e.message || 'Category fetch failed',
+                debug: { category_url, code: e.code, status: st, hint: hint403 },
+            });
+        }
+
+        const extractConcurrency =
+            usedPuppeteerCategory && ARTICLE_PUPPETEER ? 1 : EXTRACT_CONCURRENCY;
+
+        const cdn = detectCdnBlock(html);
+        if (cdn.blocked) {
+            await closeBrowser();
+            return res.status(502).json({
+                status: 'error',
+                message:
+                    'Portal mengembalikan halaman blokir/challenge CDN (bukan daftar berita). IP server VPS Anda kemungkinan ditolak (mis. Cloudflare 1005).',
+                debug: {
+                    category_url,
+                    usedPuppeteerFallback: usedPuppeteerCategory,
+                    cdnBlock: true,
+                    reason: cdn.reason,
+                    hint:
+                        'Atur NEWS_PROXY_PROVIDER_URL atau NEWS_PROXY_LIST (HTTP proxy). VPS + IP datacenter sering kena CDN. Set NEWS_PUPPETEER_ARTICLES=1 hanya jika perlu.',
+                },
             });
         }
 
@@ -202,47 +378,68 @@ router.post('/scrape', async (req, res) => {
         const articles = [];
 
         async function extractOne(link) {
+            const toRow = (articleData) => ({
+                title: articleData.title,
+                url: articleData.url || link,
+                authors: articleData.author ? [articleData.author] : [],
+                publish_date: articleData.published || null,
+                text: articleData.content
+                    ? articleData.content.replace(/<[^>]*>?/gm, ' ').substring(0, 500) + '...'
+                    : '',
+                summary: articleData.description || '',
+                keywords: [],
+                top_image: articleData.image || '',
+            });
+
             try {
                 const articleData = await extract(link, {}, {
                     headers: headersForArticleFetch(link, category_url),
                     signal: AbortSignal.timeout(PER_ARTICLE_EXTRACT_MS),
+                    ...(sessionCtx.extractAgent ? { agent: sessionCtx.extractAgent } : {}),
                 });
                 if (articleData && (articleData.title || articleData.content)) {
-                    return {
-                        ok: true,
-                        row: {
-                            title: articleData.title,
-                            url: articleData.url || link,
-                            authors: articleData.author ? [articleData.author] : [],
-                            publish_date: articleData.published || null,
-                            text: articleData.content
-                                ? articleData.content.replace(/<[^>]*>?/gm, ' ').substring(0, 500) + '...'
-                                : '',
-                            summary: articleData.description || '',
-                            keywords: [],
-                            top_image: articleData.image || '',
-                        },
-                    };
+                    return { ok: true, row: toRow(articleData) };
                 }
-                return {
-                    ok: false,
-                    fail: { link, error: 'Extractor returned empty title/content' },
-                };
+                throw new Error('Extractor returned empty title/content');
             } catch (err) {
                 const msg = err.message || String(err);
+                if (ARTICLE_PUPPETEER && process.env.NEWS_PUPPETEER !== '0') {
+                    try {
+                        const b = await getBrowser();
+                        if (b) {
+                            const phtml = await fetchPageHtmlPuppeteer(
+                                b,
+                                link,
+                                category_url,
+                                700,
+                                sessionCtx.proxyAuth || null
+                            );
+                            if (phtml && phtml.length > 400 && !detectCdnBlock(phtml).blocked) {
+                                const articleData = await extractFromHtml(phtml, link);
+                                if (articleData && (articleData.title || articleData.content)) {
+                                    return { ok: true, row: toRow(articleData) };
+                                }
+                            }
+                        }
+                    } catch (e2) {
+                        console.warn('[news] puppeteer article:', link, e2.message);
+                    }
+                }
                 console.warn('[news] extract failed:', link, msg);
                 return { ok: false, fail: { link, error: msg } };
             }
         }
 
-        for (let i = 0; i < linksLimited.length; i += EXTRACT_CONCURRENCY) {
-            const batch = linksLimited.slice(i, i + EXTRACT_CONCURRENCY);
+        for (let i = 0; i < linksLimited.length; i += extractConcurrency) {
+            const batch = linksLimited.slice(i, i + extractConcurrency);
             const settled = await Promise.all(batch.map((link) => extractOne(link)));
             for (const r of settled) {
                 if (r.ok) articles.push(r.row);
                 else extractFailures.push(r.fail);
             }
         }
+
+        await closeBrowser();
 
         const sampleHrefs = [];
         $('a[href]').each((i, el) => {
@@ -271,6 +468,9 @@ router.post('/scrape', async (req, res) => {
             data: articles,
             meta: {
                 category_url,
+                proxyUsed: !!sessionCtx.url,
+                usedPuppeteerFallback: usedPuppeteerCategory,
+                articlePuppeteerUsed: ARTICLE_PUPPETEER,
                 limit: limitN,
                 linksMatchedReadPattern: linksBeforeSlice,
                 linksProcessed: linksLimited.length,
@@ -287,6 +487,7 @@ router.post('/scrape', async (req, res) => {
         });
         
     } catch (e) {
+        await closeBrowser();
         activityLog.append({
             source: 'legacy',
             module: 'news',
